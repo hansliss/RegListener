@@ -15,3 +15,10 @@
 // TODO: reference additional headers your program requires here
 #include <windows.h>
 #include <strsafe.h>
+#include <stdlib.h>  
+#include <string.h>  
+#include <crtdbg.h>  // For _CrtSetReportMode  
+#include <errno.h>
+
+#include <ctime>
+#include <iostream>

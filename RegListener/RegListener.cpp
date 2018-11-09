@@ -74,7 +74,44 @@ void DisplayError(LPTSTR lpszFunction)
 	LocalFree(lpDisplayBuf);
 }
 
-int doInit(TCHAR *root, TCHAR *key, TCHAR *value, TCHAR *file, HANDLE *hFile, HKEY *hKey, HANDLE *hEvent, DWORD *curtype, char *curvalbuf, DWORD *curvalbufsize)
+HANDLE getLogFile(TCHAR *logFilePath) {
+	static TCHAR curLogFileName[BUFSIZE];
+	static HANDLE hLogFile = NULL;
+	if (!logFilePath) {
+		CloseHandle(hLogFile);
+		hLogFile = NULL;
+	}
+	else {
+		TCHAR newLogFileName[BUFSIZE];
+		time_t t = time(0);   // get time now
+		struct tm now;
+		localtime_s(&now, &t);
+		_snwprintf_s(newLogFileName, BUFSIZE, _TRUNCATE, _T("%s%04d-%02d.log"), logFilePath, now.tm_year + 1900, now.tm_mon + 1);
+		if (hLogFile == NULL || _tcscmp(curLogFileName, newLogFileName)) {
+			_tcsncpy_s(curLogFileName, newLogFileName, BUFSIZE);
+			if (hLogFile != NULL) {
+				CloseHandle(hLogFile);
+			}
+			hLogFile = CreateFile(curLogFileName,
+				FILE_APPEND_DATA,
+				FILE_SHARE_READ,
+				NULL,
+				OPEN_ALWAYS,
+				FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+				NULL);
+
+			if (hLogFile == INVALID_HANDLE_VALUE)
+			{
+				DisplayError(TEXT("CreateFile"));
+				logText(TEXT("Terminal failure: Unable to open file \"%s\" for write.\n"), curLogFileName);
+				return 0;
+			}
+		}
+	}
+	return hLogFile;
+}
+
+int doInit(TCHAR *root, TCHAR *key, TCHAR *value, HKEY *hKey, HANDLE *hEvent, DWORD *curtype, char *curvalbuf, DWORD *curvalbufsize)
 {
 	HKEY   hMainKey;
 	LONG   lErrorCode;
@@ -88,21 +125,6 @@ int doInit(TCHAR *root, TCHAR *key, TCHAR *value, TCHAR *file, HANDLE *hFile, HK
 	else
 	{
 		logText(TEXT("Usage: notify [HKLM|HKU|HKCU|HKCR|HCC] [<subkey>]\n"));
-		return 0;
-	}
-
-	*hFile = CreateFile(file,
-		FILE_APPEND_DATA,
-		FILE_SHARE_READ,
-		NULL,
-		OPEN_ALWAYS,
-		FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
-		NULL);
-
-	if (*hFile == INVALID_HANDLE_VALUE)
-	{
-		DisplayError(TEXT("CreateFile"));
-		logText(TEXT("Terminal failure: Unable to open file \"%s\" for write.\n"), file);
 		return 0;
 	}
 
@@ -131,7 +153,7 @@ int doInit(TCHAR *root, TCHAR *key, TCHAR *value, TCHAR *file, HANDLE *hFile, HK
 	return 1;
 }
 
-int doClose(HKEY *hKey, HANDLE *hEvent, HANDLE *hFile) {
+int doClose(HKEY *hKey, HANDLE *hEvent) {
 	LONG lErrorCode = RegCloseKey(*hKey);
 	if (lErrorCode != ERROR_SUCCESS)
 	{
@@ -146,11 +168,12 @@ int doClose(HKEY *hKey, HANDLE *hEvent, HANDLE *hFile) {
 		return 0;
 	}
 
-	CloseHandle(*hFile);
+	getLogFile(NULL);
+
 	return 1;
 }
 
-int doListen(TCHAR *value, HKEY *hKey, HANDLE *hEvent, HANDLE *hFile, DWORD *curtype, char *curvalbuf, DWORD *curvalbufsize) {
+int doListen(TCHAR *value, HKEY *hKey, HANDLE *hEvent, TCHAR *logFilePath, DWORD *curtype, char *curvalbuf, DWORD *curvalbufsize) {
 	DWORD  dwFilter = REG_NOTIFY_CHANGE_LAST_SET;
 	char newvalbuf[BUFSIZE];
 	DWORD newvalbufsize;
@@ -203,8 +226,9 @@ int doListen(TCHAR *value, HKEY *hKey, HANDLE *hEvent, HANDLE *hFile, DWORD *cur
 			GetLocalTime(&st);
 			sprintf_s(curdate, sizeof(curdate), "%04d-%02d-%02d %02d:%02d:%02d.%d",
 				st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-			sprintf_s(tmpbuf, sizeof(tmpbuf), "%s\t%s\n", curdate, valtmpbuf);
-			WriteFile(*hFile, tmpbuf, strlen(tmpbuf), NULL, NULL);
+			sprintf_s(tmpbuf, sizeof(tmpbuf), "%s\t%s\r\n", curdate, valtmpbuf);
+			HANDLE hLogFile = getLogFile(logFilePath);
+			WriteFile(hLogFile, tmpbuf, strlen(tmpbuf), NULL, NULL);
 		}
 	}
 	return 1;
@@ -215,19 +239,18 @@ DWORD WINAPI ServiceWorkerThread(LPVOID lpParam)
 	char curvalbuf[BUFSIZE];
 	DWORD curvalbufsize = BUFSIZE;
 	DWORD curtype;
-	HANDLE hFile;
 	HKEY hKey;
 	HANDLE hEvent;
-	int isOk=doInit(MYROOT, MYKEY, MYVALUE, MYFILE, &hFile, &hKey, &hEvent, &curtype, curvalbuf, &curvalbufsize);
+	int isOk=doInit(MYROOT, MYKEY, MYVALUE, &hKey, &hEvent, &curtype, curvalbuf, &curvalbufsize);
 
 	//  Periodically check if the service has been requested to stop
 	while (isOk && WaitForSingleObject(g_ServiceStopEvent, 0) != WAIT_OBJECT_0)
 	{
 
-		isOk=doListen(MYVALUE, &hKey, &hEvent, &hFile, &curtype, curvalbuf, &curvalbufsize);
+		isOk=doListen(MYVALUE, &hKey, &hEvent, MYFILE, &curtype, curvalbuf, &curvalbufsize);
 	}
 
-	doClose(&hKey, &hEvent, &hFile);
+	doClose(&hKey, &hEvent);
 	return isOk?ERROR_SUCCESS:-255;
 }
 
@@ -309,8 +332,7 @@ VOID WINAPI ServiceMain(DWORD argc, LPTSTR *argv)
 
 		if (SetServiceStatus(g_StatusHandle, &g_ServiceStatus) == FALSE)
 		{
-			OutputDebugString(_T(
-				"UU Registry Listener: ServiceMain: SetServiceStatus returned error"));
+			OutputDebugString(_T("UU Registry Listener: ServiceMain: SetServiceStatus returned error"));
 		}
 		goto EXIT;
 	}
