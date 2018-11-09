@@ -178,6 +178,7 @@ int doListen(TCHAR *value, HKEY *hKey, HANDLE *hEvent, TCHAR *logFilePath, DWORD
 	char newvalbuf[BUFSIZE];
 	DWORD newvalbufsize;
 	DWORD newtype;
+	DWORD waitResult;
 	char valtmpbuf[BUFSIZE];
 	char tmpbuf[BUFSIZE * 3];
 	// Watch the registry key for a change of value.
@@ -193,12 +194,11 @@ int doListen(TCHAR *value, HKEY *hKey, HANDLE *hEvent, TCHAR *logFilePath, DWORD
 	}
 
 	// Wait for an event to occur.
-	if (WaitForSingleObject(*hEvent, INFINITE) == WAIT_FAILED)
+	if ((waitResult=WaitForSingleObject(*hEvent, 5000)) == WAIT_FAILED)
 	{
 		logText(TEXT("Error in WaitForSingleObject (%d).\n"), GetLastError());
 		return 0;
-	}
-	else {
+	} else if (waitResult != WAIT_TIMEOUT) {
 		newvalbufsize = BUFSIZE;
 		lErrorCode = RegQueryValueEx(*hKey, value, NULL, &newtype, (LPBYTE)newvalbuf, &newvalbufsize);
 		if (lErrorCode != ERROR_SUCCESS)
